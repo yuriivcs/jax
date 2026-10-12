@@ -401,11 +401,8 @@ common:ci_darwin_arm64 --verbose_failures=true
 common:ci_darwin_arm64 --color=yes
 
 # Windows x86 CI configs
-common:ci_windows_amd64 --config=clang_local
 common:ci_windows_amd64 --config=avx_windows
 common:ci_windows_amd64 --compiler=clang-cl --config=clang --verbose_failures=true
-common:ci_windows_amd64 --crosstool_top="@xla//tools/toolchains/win2022/20241118:toolchain"
-common:ci_windows_amd64 --extra_toolchains="@xla//tools/toolchains/win2022/20241118:cc-toolchain-x64_windows-clang-cl"
 common:ci_windows_amd64 --host_linkopt=/FORCE:MULTIPLE --linkopt=/FORCE:MULTIPLE
 common:ci_windows_amd64 --color=yes
 
