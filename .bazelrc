@@ -4,9 +4,8 @@
 common --enable_bzlmod --noenable_workspace
 ## Make sure direct dependencies specified match the resolved version.
 common --check_direct_dependencies=warning
-## Canonical repo names become `@foo+` instead of `@foo~`
-## TODO: Remove after upgrading to Bazel 8
-common --incompatible_use_plus_in_repo_names
+common --incompatible_disallow_empty_glob=false
+common --incompatible_autoload_externally=+@rules_cc,+@rules_java,+@rules_python,+@rules_shell
 
 common:bzlmod --enable_bzlmod --noenable_workspace
 common:no_bzlmod --noenable_bzlmod --enable_workspace
