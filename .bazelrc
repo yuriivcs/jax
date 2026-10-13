@@ -118,6 +118,7 @@ common:windows --host_linkopt=/OPT:REF
 common:windows --linkopt=/OPT:ICF
 common:windows --host_linkopt=/OPT:ICF
 common:windows --incompatible_strict_action_env=true
+common:windows --norun_validations
 
 # #############################################################################
 # Feature-specific configurations. These are used by the CI configs below
