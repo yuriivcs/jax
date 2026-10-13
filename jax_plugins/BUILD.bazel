@@ -17,6 +17,7 @@ load(
     "if_cuda_is_configured",
     "if_oneapi_is_configured",
     "if_rocm_is_configured",
+    "py_library",
     "py_library_providing_imports_info",
 )
 
