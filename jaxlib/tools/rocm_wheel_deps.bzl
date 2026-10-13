@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 """Build rules for aggregating rocm runtime dependecies into a single target."""
 
 def _collect_rocm_data_files_impl(ctx):
@@ -45,4 +47,4 @@ _collect_rocm_data_files = rule(
 
 def collect_rocm_data_files(name, roots):
     _collect_rocm_data_files(name = name + "_gather", roots = roots)
-    native.cc_library(name = name, data = [":" + name + "_gather"])
+    cc_library(name = name, data = [":" + name + "_gather"])
