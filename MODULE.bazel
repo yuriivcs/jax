@@ -6,6 +6,7 @@ module(name = "jax")
 
 bazel_dep(name = "abseil-cpp", version = "20260526.0", repo_name = "com_google_absl")
 bazel_dep(name = "apple_support", version = "2.8.0")
+bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
 bazel_dep(name = "bazel_features", version = "1.50.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "flatbuffers", version = "25.2.10", repo_name = "com_github_google_flatbuffers")
@@ -51,6 +52,14 @@ archive_override(
     ],
     strip_prefix = "xla-dcf304bc5dca1932b99f740b911dbd73631a1a69",
     urls = ["https://github.com/openxla/xla/archive/dcf304bc5dca1932b99f740b911dbd73631a1a69.tar.gz"],
+)
+
+# flatbuffers transitively depends on aspect_rules_esbuild 0.21.0, which is incompatible with Bazel 9.
+# Pin to 0.25.1, the last Bazel 9-compatible release on aspect_rules_js 2.x (required by flatbuffers 25.2.10).
+# TODO: Remove this override once flatbuffers is upgraded to >= 25.12.19.
+single_version_override(
+    module_name = "aspect_rules_esbuild",
+    version = "0.25.1",
 )
 
 # TODO: upstream, otherwise we have to duplicate the patches in jax
