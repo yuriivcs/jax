@@ -27,9 +27,9 @@ index bedd432..a53a08e 100644
 +bazel_dep(name = "rules_ml_toolchain")
 +archive_override(
 +    module_name = "rules_ml_toolchain",
-+    integrity = "sha256-L2PAiK5/aUqS9bIktZZEVmH1Ht7pJZAx4Szus1WZMDw=",
-+    strip_prefix = "rules_ml_toolchain-44e3939a830369b01b3c789e563f1a6e97d355d4",
-+    urls = ["https://github.com/yuriivcs/rules_ml_toolchain/archive/44e3939a830369b01b3c789e563f1a6e97d355d4.tar.gz"],
++    integrity = "sha256-S6Yy4rTNMifUdfpeqPdUrSzeWr1AVZyaR8puXJwfjfQ=",
++    strip_prefix = "rules_ml_toolchain-dc043f99fd2a4638b2fc914540af443c9325b6d5",
++    urls = ["https://github.com/yuriivcs/rules_ml_toolchain/archive/dc043f99fd2a4638b2fc914540af443c9325b6d5.tar.gz"],
  )
 diff --git a/fortran/BUILD.bazel b/fortran/BUILD.bazel
 index 63f9fa8..6a42b2c 100644
