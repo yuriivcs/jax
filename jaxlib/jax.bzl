@@ -30,6 +30,7 @@ load("@python_version_repo//:py_version.bzl", "HERMETIC_PYTHON_VERSION", "HERMET
 load("@rocm_external_test_deps//:external_deps.bzl", "EXTERNAL_DEPS")
 load("@rocm_prebuilt_test_deps//:external_deps.bzl", PREBUILT_EXTERNAL_DEPS = "EXTERNAL_DEPS")
 load("@rules_python//python:defs.bzl", "PyInfo", _py_binary = "py_binary", _py_library = "py_library", _py_test = "py_test")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@test_shard_count//:test_shard_count.bzl", "USE_MINIMAL_SHARD_COUNT")
 load("@xla//third_party/py:python_wheel.bzl", "collect_data_files", "transitive_py_deps")
 load("@xla//xla/tsl:tsl.bzl", "transitive_hdrs", _if_windows = "if_windows", _pybind_extension = "tsl_pybind_extension_opensource")
@@ -653,7 +654,7 @@ def deploy_wheel(name, wheel):
         outs = [name + ".sh"],
         cmd = "echo '#!/bin/bash\ncp $(rootpath {wheel}) $$1' > $@".format(wheel = wheel),
     )
-    native.sh_binary(
+    sh_binary(
         name = name,
         srcs = [name + ".sh"],
         data = [wheel],
