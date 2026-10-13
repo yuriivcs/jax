@@ -1,0 +1,49 @@
+diff --git a/xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl b/xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl
+index 1234567..89abcdef 100644
+--- a/xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl
++++ b/xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl
+@@ -183,6 +183,7 @@ def cc_ir_header(name, src, deps = [], copts = [], **kwargs):
+         name = name + "_empty_bc",
+         outs = [name + "_empty.bc"],
+         cmd = "touch $@",
++        cmd_bat = "type NUL > $@",
+         tags = ["manual"],
+         **common_attrs
+     )
+@@ -196,6 +197,17 @@ def cc_ir_header(name, src, deps = [], copts = [], **kwargs):
+             ],
+         )
+ 
++    gen_cmd = "$(location {}) $< $(location {}) $(location {}) {} {}".format(
++        embed_bitcode_tool,
++        out_o,
++        out_header,
++        variable_name,
++        namespace,
++    ) + select({
++        "empty_bitcode": "",
++        "//conditions:default": " --fail_if_no_bitcode",
++    })
++
+     native.genrule(
+         name = name + "_gen_object_and_header",
+         srcs = select({
+@@ -204,16 +216,8 @@ def cc_ir_header(name, src, deps = [], copts = [], **kwargs):
+         }),
+         outs = [out_o, out_header],
+         tools = [embed_bitcode_tool],
+-        cmd = "$(location {}) $< $(location {}) $(location {}) {} {}".format(
+-            embed_bitcode_tool,
+-            out_o,
+-            out_header,
+-            variable_name,
+-            namespace,
+-        ) + select({
+-            "empty_bitcode": "",
+-            "//conditions:default": " --fail_if_no_bitcode",
+-        }),
++        cmd = gen_cmd,
++        cmd_bat = gen_cmd,
+         tags = ["manual"],
+         **common_attrs
+     )
