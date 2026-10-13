@@ -182,6 +182,220 @@ def py_library_providing_imports_info(*, name, lib_rule = _py_library, pytype_sr
     new_kwargs.pop("type_checking", None)
     lib_rule(name = name, data = data, **new_kwargs)
 
+def _pybind_extension(
+        name,
+        srcs,
+        module_name = None,  # @unused
+        hdrs = [],
+        dynamic_deps = [],
+        static_deps = [],
+        deps = [],
+        additional_exported_symbols = [],
+        compatible_with = None,
+        copts = [],
+        data = [],
+        defines = [],
+        deprecation = None,
+        enable_stub_generation = False,  # @unused
+        features = [],
+        local_defines = [],
+        licenses = None,
+        linkopts = [],
+        pytype_deps = [],
+        pytype_srcs = [],
+        restricted_to = None,
+        srcs_version = "PY3",
+        testonly = None,
+        visibility = None,
+        win_def_file = None):  # @unused
+    """Builds a generic Python extension module."""
+    p = name.rfind("/")
+    if p == -1:
+        sname = name
+        prefix = ""
+    else:
+        sname = name[p + 1:]
+        prefix = name[:p + 1]
+    so_file = "%s%s.so" % (prefix, sname)
+    filegroup_name = "%s_filegroup" % name
+    pyd_file = "%s%s.pyd" % (prefix, sname)
+    exported_symbols = [
+        "PyInit_%s" % sname,
+    ] + additional_exported_symbols
+
+    exported_symbols_file = "%s-exported-symbols.lds" % name
+    version_script_file = "%s-version-script.lds" % name
+
+    write_file(
+        name = name + "_exported_symbols",
+        out = exported_symbols_file,
+        content = ["_%s" % symbol for symbol in exported_symbols],
+        visibility = ["//visibility:private"],
+        testonly = testonly,
+    )
+
+    write_file(
+        name = name + "_version_script",
+        out = version_script_file,
+        content = ["{global:"] + [" %s;" % symbol for symbol in exported_symbols] + [" local: *;};"],
+        visibility = ["//visibility:private"],
+        testonly = testonly,
+    )
+
+    if static_deps:
+        cc_library_name = so_file + "_cclib"
+        _cc_library(
+            name = cc_library_name,
+            hdrs = hdrs,
+            srcs = srcs + hdrs,
+            data = data,
+            deps = deps,
+            compatible_with = compatible_with,
+            copts = copts + [
+                "-fno-strict-aliasing",
+                "-fexceptions",
+            ] + select({
+                "@xla//xla/tsl:windows": [],
+                "//conditions:default": [
+                    "-fvisibility=hidden",
+                ],
+            }),
+            defines = defines,
+            local_defines = local_defines,
+            features = features + ["-use_header_modules"],
+            restricted_to = restricted_to,
+            testonly = testonly,
+            visibility = visibility,
+        )
+
+        _cc_shared_library(
+            name = so_file,
+            roots = [cc_library_name],
+            dynamic_deps = dynamic_deps,
+            static_deps = static_deps,
+            additional_linker_inputs = [exported_symbols_file, version_script_file],
+            compatible_with = compatible_with,
+            deprecation = deprecation,
+            features = features + ["-use_header_modules"],
+            licenses = licenses,
+            restricted_to = restricted_to,
+            shared_lib_name = so_file,
+            testonly = testonly,
+            user_link_flags = linkopts + select({
+                "@xla//xla/tsl:macos": [
+                    # TODO: the -w suppresses a wall of harmless warnings about hidden typeinfo symbols
+                    # not being exported.  There should be a better way to deal with this.
+                    "-Wl,-w",
+                    "-Wl,-exported_symbols_list,$(location %s)" % exported_symbols_file,
+                    # Resolve Python C API symbols at module load time. Without
+                    # this the link fails on macOS because libpython is not
+                    # available at link time for the extension .so.
+                    "-undefined",
+                    "dynamic_lookup",
+                ],
+                "@xla//xla/tsl:windows": [],
+                "//conditions:default": [
+                    "-Wl,--version-script",
+                    "$(location %s)" % version_script_file,
+                ],
+            }),
+            visibility = visibility,
+        )
+
+        # cc_shared_library can generate more than one file.
+        # Solution to avoid the error "variable '$<' : more than one input file."
+        native.filegroup(
+            name = filegroup_name,
+            srcs = [so_file],
+            output_group = "main_shared_library_output",
+            testonly = testonly,
+        )
+
+    else:
+        _cc_binary(
+            name = so_file,
+            srcs = srcs + hdrs,
+            data = data,
+            copts = copts + [
+                "-fno-strict-aliasing",
+                "-fexceptions",
+            ] + select({
+                "@xla//xla/tsl:windows": [],
+                "//conditions:default": [
+                    "-fvisibility=hidden",
+                ],
+            }),
+            linkopts = linkopts + select({
+                "@xla//xla/tsl:macos": [
+                    # TODO: the -w suppresses a wall of harmless warnings about hidden typeinfo symbols
+                    # not being exported.  There should be a better way to deal with this.
+                    "-Wl,-w",
+                    "-Wl,-exported_symbols_list,$(location %s)" % exported_symbols_file,
+                    # Resolve Python C API symbols at module load time. Without
+                    # this the link fails on macOS because libpython is not
+                    # available at link time for the extension .so.
+                    "-undefined",
+                    "dynamic_lookup",
+                ],
+                "@xla//xla/tsl:windows": [],
+                "//conditions:default": [
+                    "-Wl,--version-script",
+                    "$(location %s)" % version_script_file,
+                ],
+            }),
+            deps = deps + [
+                exported_symbols_file,
+                version_script_file,
+            ],
+            defines = defines,
+            local_defines = local_defines,
+            features = features + ["-use_header_modules"],
+            linkshared = 1,
+            testonly = testonly,
+            licenses = licenses,
+            visibility = visibility,
+            deprecation = deprecation,
+            restricted_to = restricted_to,
+            compatible_with = compatible_with,
+        )
+
+        # For Windows, emulate the above filegroup with the shared object.
+        native.alias(
+            name = filegroup_name,
+            actual = so_file,
+        )
+
+    # For Windows only.
+    native.genrule(
+        name = name + "_pyd_copy",
+        srcs = [filegroup_name],
+        outs = [pyd_file],
+        cmd = "cp $< $@",
+        cmd_ps = "Copy-Item '$<' '$@'",
+        output_to_bindir = True,
+        visibility = visibility,
+        deprecation = deprecation,
+        restricted_to = restricted_to,
+        compatible_with = compatible_with,
+        testonly = testonly,
+    )
+
+    _py_library(
+        name = name,
+        data = select({
+            "@xla//xla/tsl:windows": [pyd_file],
+            "//conditions:default": [so_file],
+        }) + pytype_srcs,
+        deps = pytype_deps,
+        srcs_version = srcs_version,
+        licenses = licenses,
+        testonly = testonly,
+        visibility = visibility,
+        deprecation = deprecation,
+        restricted_to = restricted_to,
+        compatible_with = compatible_with,
+    )
+
 def nanobind_extension(
         name,
         additional_stubgen_deps = [],  # @unused
