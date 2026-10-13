@@ -64,6 +64,13 @@ genrule(
           sed -e 's/^from \\./from jaxlib\\.mlir\\.dialects\\./g' >> $${out}
     done
     """,
+    cmd_ps = """
+    foreach ($$src in @("$(SRCS)" -split ' ')) {
+      $$base = (Split-Path $$src -Leaf) -replace '_raw', ''
+      $$out = Join-Path "$(RULEDIR)" $$base
+      @('# pyrefly: ignore-errors') + ((Get-Content $$src) -replace '^from \\.\\.', 'from jaxlib.mlir.' -replace '^from \\.', 'from jaxlib.mlir.dialects.') | Set-Content -Encoding UTF8 $$out
+    }
+    """,
 )
 
 gentbl_filegroup(

@@ -158,6 +158,7 @@ genrule(
     ],
     outs = ["wheel_additives.zip"],
     cmd = "$(location @bazel_tools//tools/zip:zipper) c $@ $(SRCS)",
+    cmd_bat = "$(location @bazel_tools//tools/zip:zipper) c $@ $(SRCS)",
     tools = ["@bazel_tools//tools/zip:zipper"],
     visibility = ["//jax:internal"],
 )

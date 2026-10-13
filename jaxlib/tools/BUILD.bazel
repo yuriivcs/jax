@@ -16,6 +16,7 @@
 
 load("@bazel_skylib//lib:selects.bzl", "selects")
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@cuda_cudart//:version.bzl", cuda_major_version = "VERSION")
 load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
 load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm")
@@ -52,11 +53,10 @@ package(default_visibility = ["//visibility:public"])
 
 exports_files(["wheel_size_test.py"])
 
-genrule(
+write_file(
     name = "platform_tags_py",
-    srcs = [],
-    outs = ["platform_tags.py"],
-    cmd = "echo 'PLATFORM_TAGS_DICT = %s' > $@;" % PLATFORM_TAGS_DICT,
+    out = "platform_tags.py",
+    content = ["PLATFORM_TAGS_DICT = %s" % PLATFORM_TAGS_DICT],
 )
 
 pytype_strict_library(

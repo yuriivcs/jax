@@ -31,5 +31,8 @@ def py_stubgen(
             $(location {stubgen}) -m {module} -O $(RULEDIR)
             $(location {normalize}) --jaxlib-build $(OUTS)
         """.format(module = module, stubgen = stubgen, normalize = normalize),
+        cmd_bat = """
+            $(location {stubgen}) -m {module} -O $(RULEDIR) && $(location {normalize}) --jaxlib-build $(OUTS)
+        """.format(module = module, stubgen = stubgen, normalize = normalize),
         tools = [normalize, stubgen],
     )

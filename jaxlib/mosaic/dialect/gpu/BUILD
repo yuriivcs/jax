@@ -170,6 +170,7 @@ genrule(
     cmd = """
       cat $(location _mosaic_gpu_gen_enums_raw.py) | \
       sed -e 's/^from \\.\\.ir/from jaxlib\\.mlir\\.ir/g; s/^from \\./from jaxlib\\.mlir\\.dialects\\./g' > $@""",
+    cmd_ps = "(Get-Content $(location _mosaic_gpu_gen_enums_raw.py)) -replace '^from \\.\\.ir', 'from jaxlib.mlir.ir' -replace '^from \\.', 'from jaxlib.mlir.dialects.' | Set-Content -Encoding UTF8 $@",
 )
 
 genrule(
@@ -177,6 +178,7 @@ genrule(
     srcs = ["_mosaic_gpu_gen_ops_raw.py"],
     outs = ["_mosaic_gpu_gen_ops.py"],
     cmd = "cat $(location _mosaic_gpu_gen_ops_raw.py) | sed -e 's/^from \\./from jaxlib\\.mlir\\.dialects\\./g' > $@",
+    cmd_ps = "(Get-Content $(location _mosaic_gpu_gen_ops_raw.py)) -replace '^from \\.', 'from jaxlib.mlir.dialects.' | Set-Content -Encoding UTF8 $@",
 )
 
 DIALECT_CAPI_SOURCES = [

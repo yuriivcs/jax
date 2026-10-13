@@ -656,6 +656,7 @@ def deploy_wheel(name, wheel):
         srcs = [wheel],
         outs = [name + ".sh"],
         cmd = "echo '#!/bin/bash\ncp $(rootpath {wheel}) $$1' > $@".format(wheel = wheel),
+        cmd_bat = "echo #!/bin/bash> $@ && echo cp $(rootpath {wheel}) $$1>> $@".format(wheel = wheel),
     )
     sh_binary(
         name = name,

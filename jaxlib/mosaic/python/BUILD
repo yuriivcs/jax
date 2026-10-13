@@ -68,6 +68,7 @@ genrule(
     srcs = ["_tpu_ops_gen_raw.py"],
     outs = ["_tpu_ops_gen.py"],
     cmd = "cat $(location _tpu_ops_gen_raw.py) | sed -e 's/^from \\./from jaxlib\\.mlir\\.dialects\\./g' > $@",
+    cmd_ps = "(Get-Content $(location _tpu_ops_gen_raw.py)) -replace '^from \\.', 'from jaxlib.mlir.dialects.' | Set-Content -Encoding UTF8 $@",
 )
 
 genrule(
@@ -75,6 +76,7 @@ genrule(
     srcs = ["_tpu_enum_gen_raw.py"],
     outs = ["_tpu_enum_gen.py"],
     cmd = "cat $(location _tpu_enum_gen_raw.py) | sed -e 's/^from \\.\\./from jaxlib\\.mlir\\./g;s/^from \\./from jaxlib\\.mlir\\.dialects\\./g' > $@",
+    cmd_ps = "(Get-Content $(location _tpu_enum_gen_raw.py)) -replace '^from \\.\\.', 'from jaxlib.mlir.' -replace '^from \\.', 'from jaxlib.mlir.dialects.' | Set-Content -Encoding UTF8 $@",
 )
 
 py_library(
