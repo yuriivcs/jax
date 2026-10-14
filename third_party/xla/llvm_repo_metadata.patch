@@ -1,0 +1,20 @@
+diff --git a/third_party/llvm/repo_metadata.patch b/third_party/llvm/repo_metadata.patch
+--- a/third_party/llvm/repo_metadata.patch
++++ b/third_party/llvm/repo_metadata.patch
+@@ -12,3 +12,16 @@
+  
+  def _linux_uapi_setup_impl(repository_ctx):
+      """Sets up a repository of Linux UAPI headers."""
++diff --git a/utils/bazel/configure.bzl b/utils/bazel/configure.bzl
++--- a/utils/bazel/configure.bzl
+++++ b/utils/bazel/configure.bzl
++@@ -198,8 +198,5 @@ def _llvm_configure_impl(repository_ctx):
++         content = "bolt_targets = " + str(bolt_targets),
++         executable = False,
++     )
++-
++-    if hasattr(repository_ctx, "repo_metadata"):
++-        return repository_ctx.repo_metadata(reproducible = True)
++ 
++ llvm_configure = repository_rule(
++     implementation = _llvm_configure_impl,

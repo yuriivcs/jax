@@ -34,6 +34,8 @@ bazel_dep(name = "xla")
 archive_override(
     module_name = "xla",
     integrity = "sha256-NtjtG8BUh7u/rNxoCWpVAxAWV4AyqQe4vHK1+GesAiU=",
+    patch_strip = 1,
+    patches = ["//third_party/xla:llvm_repo_metadata.patch"],
     strip_prefix = "xla-919b0954c785133bf8837f1b56488ae328d00e51",
     urls = ["https://github.com/openxla/xla/archive/919b0954c785133bf8837f1b56488ae328d00e51.tar.gz"],
 )
