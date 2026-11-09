@@ -135,9 +135,6 @@ class SinhTest(jtu.JaxTestCase):
       check_signed_zeros = [
           ("tpu", False),
       ]
-    input_ftz = [
-        ("gpu", False),
-    ]
     interesting_points = [
         *_sinh_cosh_interesting_points(dtype),
         # Worst-case inputs across math libraries from Gladman et al.:
@@ -164,7 +161,6 @@ class SinhTest(jtu.JaxTestCase):
         mpmath.sinh,
         dtype,
         bounds=bounds,
-        input_ftz=input_ftz,
         ignore_inputs=ignore_inputs,
         check_signed_zeros=check_signed_zeros,
         interesting_points=interesting_points,
@@ -244,7 +240,6 @@ class TanhTest(jtu.JaxTestCase):
     ]
     input_ftz = [
         ("cpu", {bf16: False, f32: False}),
-        ("gpu", False),
     ]
     util.check_unary_precision(
         self,
@@ -568,16 +563,10 @@ class AtanhGradTest(jtu.JaxTestCase):
 
   @parameterized.named_parameters(*DTYPE_PARAMS)
   def test_atanh_grad_accuracy(self, dtype):
-    # In float16 on CPU/GPU, (1 - x) * (1 + x) overflows to -inf for |x| >= 256,
-    # causing the reciprocal to evaluate to -0.0 while the true value is
-    # subnormal (~256 ULPs).
     bounds = [
-        ("cpu", {bf16: 2.5, f16: 256.5, f32: 2.5, f64: 3.5}),
-        ("gpu", {bf16: 2.5, f16: 256.5, f32: 3.0, f64: 3.5}),
-        (TPU_EUPV1, {bf16: 1.0, f16: 1.0, f32: 190.0}),
-        ("tpu_v5p", {bf16: 1.0, f16: 1.0, f32: 37.5}),
-        ("tpu_v6e", {f16: 1.0, f32: 3.5}),
-        ("tpu_7x", {bf16: 2.5, f16: 1.0, f32: 3.5}),
+        (["cpu", "gpu"], {bf16: 2.5, f16: 2.0, f32: 2.5, f64: 3.5}),
+        ([*TPU_EUPV1, "tpu_v5p", "tpu_v6e"], {f16: 1.0, f32: 3.0}),
+        ("tpu_7x", {bf16: 2.5, f16: 1.0, f32: 3.0}),
     ]
     util.check_unary_precision(
         self,
@@ -586,6 +575,9 @@ class AtanhGradTest(jtu.JaxTestCase):
         lambda x: mpmath.inf if abs(x) == 1 else 1 / (1 - x * x),
         dtype,
         bounds=bounds,
+        domain=lambda dt: (
+            util.Domain.interval(dt, -1.0, 1.0) | util.Domain.infs_and_nans(dt)
+        ),
     )
 
 

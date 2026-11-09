@@ -92,6 +92,14 @@ When releasing, please add the new-release-boilerplate to docs/pallas/CHANGELOG.
   * Fixed {func}`jax.numpy.modf` returning `nan` as the fractional part for
     infinite inputs; it now returns a signed zero, matching NumPy
     ({jax-issue}`#41102`).
+  * Fixed {func}`jax.jit` instances of the same function that differ only in
+    `static_argnums`, `static_argnames` or `keep_unused` sharing C++ dispatch
+    cache entries, which could run the executable compiled for one instance
+    with the arguments of another and return wrong results.
+  * Fixed {func}`jax.numpy.interp` returning `nan` at and around knots whose
+    `fp` value is infinite; it now returns the knot value or the signed
+    infinity, matching NumPy. For complex `fp`, the real and imaginary parts
+    are now interpolated separately, as in NumPy.
 
 ## JAX 0.12.0.1 (October 23, 2026)
 

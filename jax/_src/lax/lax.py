@@ -2240,8 +2240,12 @@ def split(operand: ArrayLike, sizes: Sequence[DimSize],
     taken along ``axis``.
   """
   operand = asarray(operand)
-  return split_p.bind(operand, sizes=tuple(sizes),
-                      axis=canonicalize_axis(axis, operand.ndim))
+  sizes = tuple(sizes)
+  axis = canonicalize_axis(axis, operand.ndim)
+  if len(sizes) == 1:
+    _split_shape_rule(core.typeof(operand), sizes=sizes, axis=axis)
+    return [operand]
+  return split_p.bind(operand, sizes=sizes, axis=axis)
 
 
 def stack(operands: Sequence[ArrayLike], axis: int = 0) -> Array:
@@ -4786,21 +4790,26 @@ def broadcasting_layout_rule(name, out_aval, *avals, **kwargs):
 
 def _naryop_collective_rule(in_avals, out_avals, **params):
   from jax._src.lax import parallel
-  out_aval, = out_avals
-  out_spec = out_aval.sharding.spec
-  if all(not a.ndim or a.sharding.spec == out_spec for a in in_avals):
+  out_aval, *_ = out_avals
+  out_parts = out_aval.sharding.spec.partitions
+  if all(not a.ndim or a.sharding.spec.partitions == out_parts
+         for a in in_avals):
     return mlir.PartitioningRule()
+  for a in in_avals:
+    if a.ndim and any(s not in (out_s, None) for s, out_s in
+                      zip(a.sharding.spec.partitions, out_parts)):
+      raise NotImplementedError
 
   mesh = get_abstract_mesh()
 
   def _slice_to_shard(x_shard, outer_in_aval):
-    if not outer_in_aval.ndim or outer_in_aval.sharding.spec == out_spec:
+    if (not outer_in_aval.ndim or
+        outer_in_aval.sharding.spec.partitions == out_parts):
       return x_shard
 
     starts, sizes, needs_slice = [], [], False
     for d, s, out_s in safe_zip(
-        x_shard.shape, outer_in_aval.sharding.spec.partitions,
-        out_spec.partitions):
+        x_shard.shape, outer_in_aval.sharding.spec.partitions, out_parts):
       if s == out_s or d == 1:
         starts.append(np.int32(0))
         sizes.append(d)
@@ -5136,24 +5145,33 @@ def _logistic_jvp_rule(g, ans, x, accuracy):
 ad.defjvp2(logistic_p, _logistic_jvp_rule)
 core.pp_eqn_rules[logistic_p] = _unary_with_accuracy_pp_rule
 
-def logistic_impl(x, accuracy):
-  one = _const(x, 1)
+def logistic_impl(x, accuracy, *, preserve_subnormals=False):
+  one = full_like(x, 1)
   if (
-      accuracy is AccuracyMode.HIGHEST
-      and config.jax_accurate_logistic.value
-      and dtypes.issubdtype(x.dtype, np.floating)
-  ):
+      preserve_subnormals
+      or x.dtype == np.float16
+      or (
+          accuracy is AccuracyMode.HIGHEST
+          and config.jax_accurate_logistic.value
+      )
+  ) and dtypes.issubdtype(x.dtype, np.floating):
     # For x < 0, 1 / (1 + exp(-x)) loses accuracy when adding 1 to exp(-x)
-    # and overflows exp(-x) to inf (yielding 0) well before logistic(x)
-    # underflows. Computing e = exp(-|x|) keeps the exponent non-positive so
-    # exp never overflows, and selects 1 / (1 + e) for x >= 0 and e / (1 + e)
-    # for x < 0.
-    e = exp(neg(abs(x)), accuracy=accuracy)
-    one_plus_e = add(one, e)
-    return select(ge(x, _const(x, 0)), div(one, one_plus_e), div(e, one_plus_e))
-  return div(one, add(one, exp(neg(x))))
+    # and overflows exp(-x) to inf (yielding 0) well before subnormal
+    # logistic(x) underflows. Computing e = exp(-|x|) keeps the exponent
+    # non-positive so exp never overflows.
+    e = exp(-abs(x), accuracy=accuracy)
+    return select(x >= _const(x, 0), one, e) / (one + e)
+  return one / (one + exp(-x))
 mlir.register_lowering(logistic_p,
                        mlir.lower_fun(logistic_impl, multiple_results=False))
+# Unlike CPU and TPU, GPU preserves subnormals by default.
+mlir.register_lowering(
+    logistic_p,
+    mlir.lower_fun(
+        partial(logistic_impl, preserve_subnormals=True), multiple_results=False
+    ),
+    platform='gpu',
+)
 
 def _logistic_tpu_lowering(ctx, x, *, accuracy):
   old_impl = lambda: mlir.lower_fun(logistic_impl, multiple_results=False
@@ -5794,7 +5812,9 @@ def _integer_pow_lowering(ctx, x, *, y):
   aval_out, = ctx.avals_out
   return [mlir.lower_with_explicit_types(ctx, out, aval_out)]
 
-mlir.register_lowering(integer_pow_p, _integer_pow_lowering)
+mlir.register_lowering(
+    integer_pow_p, _integer_pow_lowering,
+    shard_map_collective_rule=_unop_collective_rule)
 
 _replace_zero = lambda x: select(eq(x, _const(x, 0)), _ones(x), x)
 
@@ -6554,7 +6574,8 @@ ad.defjvp(to_edtype_p,
 ad.primitive_transposes[to_edtype_p] = \
     lambda ct, x, edtype: [from_edtype_p.bind(ct, dtype=x.aval.dtype)]
 batching.defvectorized(to_edtype_p)
-mlir.register_lowering(to_edtype_p, lambda _, x, **__: [x])
+mlir.register_lowering(
+    to_edtype_p, lambda _, x, **__: [x], shard_map_passthrough=True)
 
 
 def _from_edtype_abstract_eval(x, *, dtype):
@@ -6596,7 +6617,8 @@ ad.defjvp(from_edtype_p,
 ad.primitive_transposes[from_edtype_p] = \
     lambda ct, x, dtype: [to_edtype_p.bind(ct, edtype=x.dtype)]
 batching.defvectorized(from_edtype_p)
-mlir.register_lowering(from_edtype_p, lambda _, x, **__: [x])
+mlir.register_lowering(
+    from_edtype_p, lambda _, x, **__: [x], shard_map_passthrough=True)
 
 
 def _bitcast_convert_type_shape_rule(operand, *, new_dtype):
@@ -6659,7 +6681,18 @@ def _bitcast_convert_type_lower(ctx, operand, *, new_dtype):
   out = hlo.bitcast_convert(out_type, operand)
   return [mlir.lower_with_sharding_in_types(ctx, out, aval_out)]
 
-mlir.register_lowering(bitcast_convert_type_p, _bitcast_convert_type_lower)
+def _bitcast_convert_type_collective_rule(in_avals, out_avals, *, new_dtype):
+  del out_avals
+  in_aval, = in_avals
+  # Widening consumes the trailing dim, which requires an all-gather if sharded.
+  if (dtypes.itemsize_bits(in_aval.dtype) < dtypes.itemsize_bits(new_dtype) and
+      in_aval.sharding.spec.partitions[-1] is not None):
+    raise NotImplementedError
+  return mlir.PartitioningRule()
+
+mlir.register_lowering(
+    bitcast_convert_type_p, _bitcast_convert_type_lower,
+    shard_map_collective_rule=_bitcast_convert_type_collective_rule)
 
 
 def _validate_preferred_element_type(input_dtype, preferred_element_type):
@@ -7437,7 +7470,39 @@ def _dot_general_lower(ctx, lhs, rhs, *, dimension_numbers,
     result = mlir.convert_hlo(ctx, result, accumulation_aval, aval_out)
   return [result]
 
-mlir.register_lowering(dot_general_p, _dot_general_lower)
+
+def _dot_general_collective_rule(
+    in_avals, out_avals, *, dimension_numbers, **params
+):
+  del params
+  (lhs_aval, rhs_aval), (out_aval,) = in_avals, out_avals
+  lhs_spec, rhs_spec = lhs_aval.sharding.spec, rhs_aval.sharding.spec
+  (lhs_c, rhs_c), _ = dimension_numbers
+  if any(lhs_spec.partitions[i] is not None for i in lhs_c) or any(
+      rhs_spec.partitions[i] is not None for i in rhs_c
+  ):
+    raise NotImplementedError
+  try:
+    expected_out = _dot_general_sharding_rule(
+        lhs_aval,
+        rhs_aval,
+        dimension_numbers=dimension_numbers,
+        precision=None,
+        preferred_element_type=None,
+        out_sharding=None,
+    )
+  except (core.ShardingTypeError, lax_utils.DuplicateSpecError):
+    raise NotImplementedError from None
+  if out_aval.sharding.spec.partitions != expected_out.spec.partitions:
+    raise NotImplementedError
+  return mlir.PartitioningRule(per_shard_params={'out_sharding': None})
+
+
+mlir.register_lowering(
+    dot_general_p,
+    _dot_general_lower,
+    shard_map_collective_rule=_dot_general_collective_rule,
+)
 
 for platform in ["cpu", "tpu"]:
   mlir.register_lowering(dot_general_p,
@@ -8276,7 +8341,26 @@ pe.forwarding_rules[broadcast_in_dim_p] = _broadcast_in_dim_fwd_rule
 pe.custom_partial_eval_rules[broadcast_in_dim_p] = _broadcast_in_dim_partial_eval
 pe.custom_staging_rules[broadcast_in_dim_p] = _broadcast_in_dim_staging_rule
 core.custom_typechecks[broadcast_in_dim_p] = _broadcast_in_dim_typecheck_rule
-mlir.register_lowering(broadcast_in_dim_p, _broadcast_in_dim_lower)
+
+def _broadcast_in_dim_collective_rule(
+    in_avals, out_avals, *, shape, broadcast_dimensions, sharding):
+  del shape, sharding
+  in_aval, = in_avals
+  out_aval, = out_avals
+  out_parts = out_aval.sharding.spec.partitions
+  for in_size, in_s, out_dim in zip(
+      in_aval.shape, in_aval.sharding.spec.partitions, broadcast_dimensions):
+    if in_s == out_parts[out_dim] or (in_s is None and in_size == 1):
+      continue
+    raise NotImplementedError
+  return mlir.PartitioningRule(per_shard_params={
+      'shape': out_aval.sharding.shard_shape(out_aval.shape),
+      'sharding': None,
+  })
+
+mlir.register_lowering(
+    broadcast_in_dim_p, _broadcast_in_dim_lower,
+    shard_map_collective_rule=_broadcast_in_dim_collective_rule)
 core.pp_eqn_rules[broadcast_in_dim_p] = _broadcast_in_dim_pp_rule
 lax_utils.register_unreduced_lojax(broadcast_in_dim_p, 'sharding')
 
@@ -8346,7 +8430,8 @@ tile_p.def_abstract_eval(_tile_abstract_eval)
 tile_p.def_impl(partial(dispatch.apply_primitive, tile_p))
 ad.deflinear2(tile_p, _tile_transpose_rule)
 batching.primitive_batchers[tile_p] = _tile_batch_rule
-mlir.register_lowering(tile_p, _tile_lower)
+mlir.register_lowering(
+    tile_p, _tile_lower, shard_map_collective_rule=_unop_collective_rule)
 
 
 def _clamp_shape_rule(min, operand, max):
@@ -8428,7 +8513,9 @@ ad.defjvp(clamp_p,
           lambda g, min, operand, max:
           select(lt(max, operand), g, _zeros(operand)))
 batching.primitive_batchers[clamp_p] = _clamp_batch_rule
-mlir.register_lowering(clamp_p, partial(_nary_lower_hlo, hlo.clamp))
+mlir.register_lowering(
+    clamp_p, partial(_nary_lower_hlo, hlo.clamp),
+    shard_map_collective_rule=_naryop_collective_rule)
 
 def _concatenate_shape_rule(*operands, **kwargs):
   dimension = kwargs.pop('dimension')
@@ -8458,7 +8545,7 @@ def _concatenate_shape_rule(*operands, **kwargs):
   ex_shape = operands[0].shape
   return ex_shape[:dimension] + (concat_size,) + ex_shape[dimension+1:]
 
-def _concatenate_sharding_rule(*operands, dimension):
+def _concatenate_sharding_rule(*operands, **kwargs):
   non_empty_s = [o.sharding for o in operands if not o.sharding.mesh.empty]
   if not non_empty_s:
     return core.get_cur_mesh_sharding()
@@ -8466,10 +8553,6 @@ def _concatenate_sharding_rule(*operands, dimension):
     ss = ", ".join(str(o.sharding) for o in operands)
     raise core.ShardingTypeError(
         f"All operands should have the same sharding. Got shardings {ss}")
-  if non_empty_s[0].spec.partitions[dimension] is not None:
-    raise core.ShardingTypeError(
-        f"concatenate operands cannot be sharded on the concat dimension "
-        f"{dimension}. Got operand types={[o.str_short(True) for o in operands]}")
   return non_empty_s[0]
 
 def _concatenate_reduced_rule(*operands, **kwargs):
@@ -8565,7 +8648,7 @@ def _concatenate_collective_rule(in_avals, out_avals, *, dimension):
   out_aval, = out_avals
   out_spec = out_aval.sharding.spec
   # _concatenate_sharding_rule skips empty-mesh constants.
-  if (out_spec[dimension] is not None or
+  if (out_spec.partitions[dimension] is not None or
       any(a.sharding.spec != out_spec for a in in_avals)):
     raise NotImplementedError
   return mlir.PartitioningRule()
@@ -8683,7 +8766,16 @@ stack_p = standard_primitive(
     ur_rule=_stack_ur_rule,
     layout_rule=_stack_layout_rule)
 ad.deflinear2(stack_p, _stack_transpose_rule)
-mlir.register_lowering(stack_p, _stack_lower)
+
+def _stack_collective_rule(in_avals, out_avals, *, axis):
+  del out_avals, axis
+  # _stack_sharding_rule skips empty-mesh constants.
+  if len({a.sharding.spec for a in in_avals}) > 1:
+    raise NotImplementedError
+  return mlir.PartitioningRule()
+
+mlir.register_lowering(
+    stack_p, _stack_lower, shard_map_collective_rule=_stack_collective_rule)
 lax_utils.register_unreduced_lojax(stack_p)
 
 
@@ -8799,7 +8891,8 @@ unstack_p.def_abstract_eval(
             _unstack_vma_rule, _unstack_ur_rule, _unstack_layout_rule))
 unstack_p.def_impl(partial(dispatch.apply_primitive, unstack_p))
 ad.deflinear2(unstack_p, _unstack_transpose_rule)
-mlir.register_lowering(unstack_p, _unstack_lower)
+mlir.register_lowering(
+    unstack_p, _unstack_lower, shard_map_collective_rule=_unop_collective_rule)
 lax_utils.register_unreduced_lojax(unstack_p)
 
 batching.primitive_batchers[stack_p] = _stack_batch_rule
@@ -8857,11 +8950,11 @@ def _split_lower(ctx, x, *, sizes, axis):
   return outs
 
 def _split_sharding_rule(operand, *, sizes, axis):
-  if operand.sharding.spec.partitions[axis] is not None:
-    raise core.ShardingTypeError(
-        f"split operand cannot be sharded on the split axis {axis}. "
-        f"Got operand type={operand.str_short(True)}")
-  return [operand.sharding] * len(sizes)
+  # TODO(yashkatariya): Once JAX supports uneven sharding at the top level,
+  # change this logic to `return operand.sharding` directly.
+  out_shapes = _split_shape_rule(operand, sizes=sizes, axis=axis)
+  return [slicing._get_sharding_for_varying_out_shape(out_sh, operand, 'split')
+          for out_sh in out_shapes]
 
 def _split_ur_rule(operand, *, sizes, axis):
   out_shapes = _split_shape_rule(operand, sizes=sizes, axis=axis)
@@ -8888,7 +8981,16 @@ split_p.def_abstract_eval(
 split_p.def_impl(partial(dispatch.apply_primitive, split_p))
 ad.deflinear2(split_p, _split_transpose_rule)
 batching.primitive_batchers[split_p] = _split_batch_rule
-mlir.register_lowering(split_p, _split_lower)
+
+def _split_collective_rule(in_avals, out_avals, *, sizes, axis):
+  del out_avals, sizes
+  in_aval, = in_avals
+  if in_aval.sharding.spec.partitions[axis] is not None:
+    raise NotImplementedError
+  return mlir.PartitioningRule()
+
+mlir.register_lowering(
+    split_p, _split_lower, shard_map_collective_rule=_split_collective_rule)
 lax_utils.register_unreduced_lojax(split_p)
 
 def _pad_dtype_rule(operand, padding_value, *, padding_config):
@@ -9002,7 +9104,15 @@ def _pad_lower(ctx, x, padding_value, *, padding_config):
   out = mlir.pad(ctx, aval_out, x, padding_value, low, high, interior)
   return [mlir.lower_with_sharding_in_types(ctx, out, aval_out)]
 
-mlir.register_lowering(pad_p, _pad_lower)
+def _pad_collective_rule(in_avals, out_avals, *, padding_config):
+  in_aval, _ = in_avals
+  if any(s is not None and cfg != (0, 0, 0)
+         for s, cfg in zip(in_aval.sharding.spec.partitions, padding_config)):
+    raise NotImplementedError
+  return mlir.PartitioningRule()
+
+mlir.register_lowering(
+    pad_p, _pad_lower, shard_map_collective_rule=_pad_collective_rule)
 lax_utils.register_unreduced_lojax(pad_p)
 
 
@@ -9077,7 +9187,8 @@ def _squeeze_lower(ctx, operand, *, dimensions):
   out = mlir.reshape(ctx, operand, aval_out)
   return [mlir.lower_with_explicit_types(ctx, out, aval_out)]
 
-mlir.register_lowering(squeeze_p, _squeeze_lower)
+mlir.register_lowering(
+    squeeze_p, _squeeze_lower, shard_map_collective_rule=_unop_collective_rule)
 lax_utils.register_unreduced_lojax(squeeze_p)
 
 
@@ -9110,7 +9221,7 @@ def _reshape_shape_rule(operand, *, new_sizes, dimensions, sharding):
 class ReshapeExplicitError(Exception):
   pass
 
-def _split_on_one_axis(op_shape, new_sizes):
+def _split_on_one_axis(op_shape, new_sizes, allow_multi=False):
   op_shape = [s for s in op_shape if s != 1]
   new_sizes = [s for s in new_sizes if s != 1]
 
@@ -9126,7 +9237,7 @@ def _split_on_one_axis(op_shape, new_sizes):
       out_indices.append(j)
     else:
       count += 1
-      if count > 1:
+      if not allow_multi and count > 1:
         raise ReshapeExplicitError()
       temp = [new_sizes[j]]
       temp_indices = [j]
@@ -9144,8 +9255,8 @@ def _split_on_one_axis(op_shape, new_sizes):
   return True, out, out_indices
 
 
-def _merge_on_one_axis(operand, new_sizes):
-  return _split_on_one_axis(new_sizes, operand.shape)
+def _merge_on_one_axis(operand, new_sizes, allow_multi=False):
+  return _split_on_one_axis(new_sizes, operand.shape, allow_multi=allow_multi)
 
 
 def raise_reshape_error(operand, new_sizes) -> Never:
@@ -9156,12 +9267,13 @@ def raise_reshape_error(operand, new_sizes) -> Never:
 
 
 def _reshape_sharding_rule(operand, *, new_sizes, dimensions, sharding):
-  return _reshape_sharding_rule_opt(operand, new_sizes, dimensions, sharding,
-                                    merge_a2a_error=False)
+  return _reshape_sharding_rule_opt(
+      operand, new_sizes=new_sizes, dimensions=dimensions, sharding=sharding,
+      allow_multi=False)
 
-# TODO(yashkatariya): Delete this when merge_a2a_error is always True.
-def _reshape_sharding_rule_opt(operand, new_sizes, dimensions, sharding,
-                               merge_a2a_error):
+
+def _reshape_sharding_rule_opt(operand, *, new_sizes, dimensions, sharding,
+                               allow_multi):
   if sharding is not None:
     return sharding
   if all(s is None for s in operand.sharding.spec.partitions):
@@ -9173,7 +9285,8 @@ def _reshape_sharding_rule_opt(operand, new_sizes, dimensions, sharding,
     return _split_merge_singleton_dim_sharding_rule(operand, new_sizes)
 
   try:
-    is_split, out_split, _ = _split_on_one_axis(operand.shape, new_sizes)
+    is_split, out_split, _ = _split_on_one_axis(
+        operand.shape, new_sizes, allow_multi=allow_multi)
   except ReshapeExplicitError:
     raise_reshape_error(operand, new_sizes)
   if is_split:
@@ -9181,12 +9294,13 @@ def _reshape_sharding_rule_opt(operand, new_sizes, dimensions, sharding,
                                         dimensions)
 
   try:
-    is_merge, operand_merge, _ = _merge_on_one_axis(operand, new_sizes)
+    is_merge, operand_merge, _ = _merge_on_one_axis(
+        operand, new_sizes, allow_multi=allow_multi)
   except ReshapeExplicitError:
     raise_reshape_error(operand, new_sizes)
   if is_merge:
     return _merge_an_axis_sharding_rule(operand, operand_merge, new_sizes,
-                                        dimensions, merge_a2a_error)
+                                        dimensions)
   raise_reshape_error(operand, new_sizes)
 
 
@@ -9249,14 +9363,13 @@ def _split_an_axis_sharding_rule(operand, out_split, new_sizes, dimensions):
   assert len(out_spec) == len(new_sizes), (out_spec, new_sizes)
   return operand.sharding.update(spec=out_spec)
 
-def strip_trailing_nones(tup_sp, op_merge):
-  while tup_sp[-1] is None:
-    tup_sp.pop()
-    op_merge.pop()
-  return tuple(tup_sp), tuple(op_merge)
+def strip_trailing_nones(lst):
+  while lst[-1] is None:
+    lst.pop()
+  return tuple(lst)
 
 def _merge_an_axis_sharding_rule(operand, operand_merge, orig_new_sizes,
-                                 dimensions, merge_a2a_error):
+                                 dimensions):
   new_spec = []
   mesh = operand.sharding.mesh
   op_partitions, op_shape = operand.sharding.spec.partitions, operand.shape
@@ -9269,18 +9382,11 @@ def _merge_an_axis_sharding_rule(operand, operand_merge, orig_new_sizes,
       if all(s is None for s in tup_sp):
         new_spec.append(None)
       elif dimensions is None:
-        # Every dim before the last sharded dim must have local size 1; e.g.
-        # f32[4@x, 4@y] -> f32[16@(x,y)] on {x: 2, y: 2} needs an all-to-all.
-        tup_sp, op_merge = strip_trailing_nones(tup_sp, op_merge)
-        for dim_size, sp in zip(op_merge[:-1], tup_sp[:-1]):
-          if sp is None:
-            raise_reshape_error(operand, orig_new_sizes)
-          sp_tup = sp if isinstance(sp, tuple) else (sp,)
-          if (merge_a2a_error and
-              dim_size // math.prod(mesh.shape[a] for a in sp_tup) != 1):
-            raise_reshape_error(operand, orig_new_sizes)
+        tup_sp = strip_trailing_nones(flatten_spec(tup_sp))
+        if None in tup_sp:
+          raise_reshape_error(operand, orig_new_sizes)
         partitions = split_partitions(
-            mesh, flatten_spec(tup_sp), [ns], operand, orig_new_sizes)
+            mesh, tup_sp, [ns], operand, orig_new_sizes)
         new_spec.extend(partitions)
       else:
         raise_reshape_error(operand, orig_new_sizes)
@@ -9292,7 +9398,7 @@ def _merge_an_axis_sharding_rule(operand, operand_merge, orig_new_sizes,
   out_spec = []
   for i, n in enumerate(orig_new_sizes):
     if n == 1:
-      if op_shape[i] == 1:
+      if i < len(op_shape) and op_shape[i] == 1:
         out_spec.append(op_partitions[i])
       else:
         out_spec.append(None)
@@ -9493,6 +9599,65 @@ def _reshape_batch_rule(axis_data, batched_args, batch_dims, *, new_sizes,
   return out, 0
 
 
+def _roundtrip_reshape_sharding(src_aval, dst_aval):
+  try:
+    mid_dst = _reshape_sharding_rule_opt(
+        src_aval, new_sizes=dst_aval.shape, dimensions=None, sharding=None,
+        allow_multi=True)
+    mid_src = _reshape_sharding_rule_opt(
+        dst_aval.update(sharding=mid_dst), new_sizes=src_aval.shape,
+        dimensions=None, sharding=None, allow_multi=True)
+  except core.ShardingTypeError:
+    return None
+  return mid_src, mid_dst
+
+
+def _reshard_cost(steps):
+  num_collectives = sum(not isinstance(s, pjit.ReshardSlice) for s in steps)
+  num_ag = sum(isinstance(s, pjit.ReshardAG) for s in steps)
+  return (num_collectives, num_ag, len(steps))
+
+
+def _reshape_collective_rule(in_avals, out_avals, *, new_sizes, dimensions,
+                             sharding):
+  if dimensions is not None:
+    raise NotImplementedError
+
+  (in_aval,), (out_aval,) = in_avals, out_avals
+  in_spec = in_aval.sharding.spec.partitions
+  out_spec = out_aval.sharding.spec.partitions
+  mesh = get_abstract_mesh()
+
+  pairs = []
+  if (fwd := _roundtrip_reshape_sharding(in_aval, out_aval)) is not None:
+    pairs.append(fwd)
+  if (bwd := _roundtrip_reshape_sharding(out_aval, in_aval)) is not None:
+    mid_out, mid_in = bwd
+    pairs.append((mid_in, mid_out))
+
+  if not pairs:
+    raise NotImplementedError
+
+  candidates = []
+  for mid_in, mid_out in pairs:
+    in_steps = pjit._plan_reshard(in_spec, mid_in.spec, mesh)
+    out_steps = pjit._plan_reshard(mid_out.spec, out_spec, mesh)
+    candidates.append((mid_out, in_steps, out_steps))
+
+  mid_out, in_steps, out_steps = _min(
+      candidates, key=lambda c: _reshard_cost(c[1] + c[2]))
+
+  return mlir.PartitioningRule(
+      in_collective=(None if not in_steps else
+                     lambda x: (pjit._apply_reshard_steps(x, in_steps, mesh),)),
+      out_collective=(None if not out_steps else
+                      lambda y: pjit._apply_reshard_steps(y, out_steps, mesh)),
+      per_shard_params={
+          'new_sizes': mid_out.shard_shape(out_aval.shape),
+          'sharding': None,
+      })
+
+
 def _reshape_lower(ctx, x, new_sizes, dimensions, sharding):
   aval_out, = ctx.avals_out
   if dimensions is not None:
@@ -9513,7 +9678,9 @@ reshape_p = standard_primitive(
     ur_rule=_reshape_ur_rule, layout_rule=_reshape_layout_rule)
 ad.deflinear2(reshape_p, _reshape_transpose_rule)
 batching.fancy_primitive_batchers[reshape_p] = _reshape_batch_rule
-mlir.register_lowering(reshape_p, _reshape_lower)
+mlir.register_lowering(
+    reshape_p, _reshape_lower,
+    shard_map_collective_rule=_reshape_collective_rule)
 core.custom_typechecks[reshape_p] = _reshape_typecheck_rule
 pe.custom_staging_rules[reshape_p] = _reshape_staging_rule
 lax_utils.register_unreduced_lojax(reshape_p, 'sharding')
@@ -9602,7 +9769,9 @@ transpose_p = standard_primitive(
 ad.deflinear2(transpose_p,
               lambda t, _, permutation: [transpose(t, np.argsort(permutation))])
 batching.primitive_batchers[transpose_p] = _transpose_batch_rule
-mlir.register_lowering(transpose_p, _transpose_lower)
+mlir.register_lowering(
+    transpose_p, _transpose_lower,
+    shard_map_collective_rule=_unop_collective_rule)
 lax_utils.register_unreduced_lojax(transpose_p)
 
 
@@ -9831,7 +10000,9 @@ select_n_p = standard_primitive(
 ad.primitive_jvps[select_n_p] = _select_jvp
 ad.primitive_transposes[select_n_p] = _select_transpose_rule
 batching.fancy_primitive_batchers[select_n_p] = _select_batch_rule
-mlir.register_lowering(select_n_p, _select_hlo_lowering)
+mlir.register_lowering(
+    select_n_p, _select_hlo_lowering,
+    shard_map_collective_rule=_naryop_collective_rule)
 lax_utils.register_unreduced_lojax(select_n_p)
 
 
@@ -10244,6 +10415,14 @@ argmax_p = standard_primitive(_argminmax_shape_rule, _argminmax_dtype_rule,
 batching.defreducer(argmax_p)
 ad.defjvp_zero(argmax_p)
 
+def _argminmax_collective_rule(in_avals, out_avals, *, axes, index_dtype):
+  del out_avals, index_dtype
+  in_aval, = in_avals
+  axis, = axes
+  if in_aval.sharding.spec.partitions[axis] is not None:
+    raise NotImplementedError
+  return mlir.PartitioningRule()
+
 mlir.register_lowering(
     argmin_p,
     mlir.lower_fun(
@@ -10251,6 +10430,7 @@ mlir.register_lowering(
         multiple_results=False,
     ),
     inline=False,
+    shard_map_collective_rule=_argminmax_collective_rule,
 )
 
 mlir.register_lowering(
@@ -10260,6 +10440,7 @@ mlir.register_lowering(
         multiple_results=False,
     ),
     inline=False,
+    shard_map_collective_rule=_argminmax_collective_rule,
 )
 
 def _reduce_logical_shape_rule(operand, *, axes):
@@ -10467,7 +10648,9 @@ def _reduce_precision_lower(ctx, operand, *, exponent_bits, mantissa_bits):
                              mlir.i32_attr(mantissa_bits))
   return [mlir.lower_with_explicit_types(ctx, out, aval_out)]
 
-mlir.register_lowering(reduce_precision_p, _reduce_precision_lower)
+mlir.register_lowering(
+    reduce_precision_p, _reduce_precision_lower,
+    shard_map_collective_rule=_unop_collective_rule)
 lax_utils.register_unreduced_lojax(reduce_precision_p)
 
 
@@ -10662,7 +10845,15 @@ def _sort_lower(ctx, *operands, dimension, is_stable, num_keys):
   return [mlir.lower_with_sharding_in_types(ctx, op, aval)
           for op, aval in zip(sort.results, ctx.avals_out)]
 
-mlir.register_lowering(sort_p, _sort_lower)
+def _sort_collective_rule(in_avals, out_avals, **params):
+  del out_avals, params
+  # _sort_sharding_rule skips empty-mesh constants.
+  if len({a.sharding.spec for a in in_avals}) > 1:
+    raise NotImplementedError
+  return mlir.PartitioningRule()
+
+mlir.register_lowering(
+    sort_p, _sort_lower, shard_map_collective_rule=_sort_collective_rule)
 
 
 def _top_k_shape_rule(operand, *, k, axis, is_stable):
@@ -10794,7 +10985,9 @@ def _top_k_lower(ctx, operand, k, axis, is_stable):
     results = [hlo.transpose(result, mlir.dense_int_array(perm))
                for result in results]
   return results
-mlir.register_lowering(top_k_p, _top_k_lower)
+
+mlir.register_lowering(
+    top_k_p, _top_k_lower, shard_map_collective_rule=_unop_collective_rule)
 
 ad.primitive_jvps[top_k_p] = _top_k_jvp
 batching.primitive_batchers[top_k_p] = _top_k_batch_rule
@@ -11037,7 +11230,7 @@ copy_p.def_abstract_eval(lambda x: x)
 def _copy_lowering(ctx, x):
   out_aval, = ctx.avals_out
   return [mlir.lower_with_sharding_in_types(ctx, x, out_aval)]
-mlir.register_lowering(copy_p, _copy_lowering)
+mlir.register_lowering(copy_p, _copy_lowering, shard_map_passthrough=True)
 ad.deflinear(copy_p, lambda t: [copy_p.bind(t)])
 batching.defvectorized(copy_p)
 copy_p.is_high = lambda x: x.is_high  # type: ignore
@@ -11163,7 +11356,19 @@ def _iota_lower(ctx, dtype, shape, dimension, sharding):
   aval_out, = ctx.avals_out
   out = mlir.iota(ctx, aval_out, dimension=dimension)
   return [mlir.lower_with_explicit_types(ctx, out, aval_out)]
-mlir.register_lowering(iota_p, _iota_lower)
+
+def _iota_collective_rule(in_avals, out_avals, *, dimension, **_):
+  del in_avals
+  out_aval, = out_avals
+  if out_aval.sharding.spec.partitions[dimension] is not None:
+    raise NotImplementedError
+  return mlir.PartitioningRule(per_shard_params={
+      'shape': out_aval.sharding.shard_shape(out_aval.shape),
+      'sharding': None,
+  })
+
+mlir.register_lowering(
+    iota_p, _iota_lower, shard_map_collective_rule=_iota_collective_rule)
 
 ### util
 
@@ -11538,7 +11743,22 @@ def _empty_lower(ctx, *, shape, dtype, out_sharding):
   out = mlir.ir_constant(np.zeros((), phys_aval.dtype))
   out = mlir.broadcast_in_dim(ctx, out, phys_aval, broadcast_dimensions=[])
   return [mlir.lower_with_explicit_types(ctx, out, aval_out)]
-mlir.register_lowering(empty_p, _empty_lower)
+
+
+def _empty_collective_rule(in_avals, out_avals, **params):
+  del in_avals, params
+  (out_aval,) = out_avals
+  return mlir.PartitioningRule(
+      per_shard_params={
+          'shape': out_aval.sharding.shard_shape(out_aval.shape),
+          'out_sharding': None,
+      }
+  )
+
+
+mlir.register_lowering(
+    empty_p, _empty_lower, shard_map_collective_rule=_empty_collective_rule
+)
 
 # TODO(yashkatariya): Delete `empty2` and replace scan's usage with `empty` once
 # AllocateBuffer issues are fixed
@@ -11563,7 +11783,9 @@ def _empty2_lower(ctx, *, dtype, memory_space):
   phys_aval = core.physical_aval(aval_out)
   out = mlir.ir_constant(np.zeros(phys_aval.shape, phys_aval.dtype))
   return [mlir.lower_with_explicit_types(ctx, out, aval_out)]
-mlir.register_lowering(empty2_p, _empty2_lower)
+mlir.register_lowering(
+    empty2_p, _empty2_lower, shard_map_collective_rule=_unop_collective_rule
+)
 
 
 tie_p = core.Primitive('tie')
@@ -11647,8 +11869,11 @@ def _optimization_barrier_lowering_rule(ctx, *args):
          if isinstance(aval, core.ShapedArray) else op
          for op, aval in zip(barrier_op.results, ctx.avals_out)]
   return treedef.unflatten(out)
-mlir.register_lowering(optimization_barrier_p,
-                       _optimization_barrier_lowering_rule)
+mlir.register_lowering(
+    optimization_barrier_p,
+    _optimization_barrier_lowering_rule,
+    shard_map_passthrough=True,
+)
 
 def _optimization_barrier_batcher(batched_args, batch_dims, **params):
   return optimization_barrier_p.bind(*batched_args, **params), batch_dims

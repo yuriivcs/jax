@@ -1100,8 +1100,9 @@ def register_lowering(prim: core.Primitive, rule: LoweringRule,
       raising ``NotImplementedError`` if unsupported) to lower explicit-mesh
       collectives via ``shard_map`` when ``jax_shard_map_partitioning`` is
       enabled.
-    shard_map_passthrough: If ``True``, allow this higher-order container
-      primitive to lower directly so its sub-jaxprs are partitioned instead.
+    shard_map_passthrough: If ``True``, lower this primitive directly without
+      wrapping it in ``shard_map`` (e.g. for identity primitives or primitives
+      whose lowering delegates to other JAX ops).
   """
   assert not isinstance(rule, LoweringRuleEntry)
   if isinstance(inline, bool):
@@ -2565,44 +2566,46 @@ def _get_override_lowering_rule(
 
 def _maybe_lower_with_shard_map(
     _prim: core.Primitive, ctx: LoweringRuleContext, *args, **params):
-  from jax._src import shard_map  # pyrefly: ignore[missing-module-attribute]
+  from jax._src import shard_map  # type: ignore
+  from jax._src import pjit  # type: ignore
   if (not config.shard_map_partitioning.value or
       _prim in shard_map_passthrough_primitives):
     return None
 
   mesh = get_abstract_mesh()
-  if not mesh.explicit_axes:
+  if mesh.empty or mesh.are_all_axes_manual or mesh.auto_axes:
     return None
+  assert mesh.explicit_axes and mesh.are_all_axes_explicit_or_manual
 
   if (rule := shard_map_collective_rules.get(_prim)) is None:
     raise NotImplementedError
 
-  if _prim.multiple_results:
-    # TODO(rdyro): Support multi-output primitives.
-    raise NotImplementedError
   assert ctx.avals_out is not None
-  out_aval, = ctx.avals_out
-  assert isinstance(out_aval, core.ShapedArray)
+  assert all(isinstance(a, core.ShapedArray) for a in ctx.avals_out)
 
   partitioning_rule = rule(ctx.avals_in, ctx.avals_out, **params)
   assert isinstance(partitioning_rule, PartitioningRule)
   if partitioning_rule.per_shard_params:
     params = params | partitioning_rule.per_shard_params
+  out_specs = [a.sharding.spec for a in ctx.avals_out]
+  if not _prim.multiple_results:
+    out_specs, = out_specs
 
   def fn(*operands):
-    @partial(shard_map.shard_map, mesh=mesh, out_specs=out_aval.sharding.spec,
+    @partial(shard_map.shard_map, mesh=mesh, out_specs=out_specs,
              axis_names=set(mesh.explicit_axes), check_vma=False)
     def body(*xs):
       assert get_abstract_mesh().are_all_axes_manual
       if partitioning_rule.in_collective is not None:
         xs = partitioning_rule.in_collective(*xs)
-      ans = _prim.bind(*xs, **params)
+      if _prim is not pjit.reshard_p:
+        xs = _prim.bind(*xs, **params)
       if partitioning_rule.out_collective is not None:
-        ans = partitioning_rule.out_collective(ans)
-      return ans
+        xs = partitioning_rule.out_collective(xs)
+      return xs
     return body(*operands)
 
-  return lower_fun(fn, multiple_results=False)(ctx, *args)
+  return lower_fun(fn, multiple_results=_prim.multiple_results)(ctx, *args)
 
 def _uncached_lowering(
     primitive: core.Primitive, eqn_ctx: core.JaxprEqnContext,
@@ -3227,9 +3230,13 @@ def add_jaxvals_lowering(ctx, x, y):
   out = hlo.add(x, y)
   return [lower_with_explicit_types(ctx, out, out_aval)]
 
-register_lowering(ad_util.add_jaxvals_p, add_jaxvals_lowering)
+register_lowering(
+    ad_util.add_jaxvals_p, add_jaxvals_lowering,
+    shard_map_collective_rule=lambda *_, **__: PartitioningRule())
 
-register_lowering(ad_util.stop_gradient_p, lambda ctx, x: [x])
+register_lowering(
+    ad_util.stop_gradient_p, lambda ctx, x: [x], shard_map_passthrough=True
+)
 
 
 def compare_hlo(x, y, direction: str, comparison_type: str | None = None):

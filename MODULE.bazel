@@ -38,15 +38,18 @@ archive_override(
     integrity = "sha256-YXUNZDT5Vdyq2ebCceTGKB9QPxIbaFFS4OaXclqc2tQ=",
     strip_prefix = "rules_ml_toolchain-d3bd07c9762ec9c5f01583fd5087acc2e362c64b",
     urls = ["https://github.com/yuriivcs/rules_ml_toolchain/archive/d3bd07c9762ec9c5f01583fd5087acc2e362c64b.tar.gz"],
+    #integrity = "sha256-P7BJQ3ExN21wEg+hITdln+PCAFJPiFe9QibjC+1ZXKc=",
+    #strip_prefix = "rules_ml_toolchain-cd8176c0dd2ff1f2f8cf3fc8e098e2577d227235",
+    #urls = ["https://github.com/google-ml-infra/rules_ml_toolchain/archive/cd8176c0dd2ff1f2f8cf3fc8e098e2577d227235.tar.gz"],
 )
 
 # TODO: use a released version when available
 bazel_dep(name = "xla")
 archive_override(
     module_name = "xla",
-    integrity = "sha256-P1CNzoxZ7dmBauLLJJ/EfiXs9rorPmcvwy+EIxbw4uk=",
-    strip_prefix = "xla-acd692882631ecac047090df93f7c5a1a6489d12",
-    urls = ["https://github.com/openxla/xla/archive/acd692882631ecac047090df93f7c5a1a6489d12.tar.gz"],
+    integrity = "sha256-xdSqY/kyhmv+FDVxIMxZ7IMJS+2RV0XO/VaBzndxKL8=",
+    strip_prefix = "xla-9af938ab71d667f4e5108f7c07bae60ba671de44",
+    urls = ["https://github.com/openxla/xla/archive/9af938ab71d667f4e5108f7c07bae60ba671de44.tar.gz"],
 )
 
 # flatbuffers transitively depends on aspect_rules_esbuild 0.21.0, which is incompatible with Bazel 9.
