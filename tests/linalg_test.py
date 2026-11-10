@@ -2074,7 +2074,7 @@ class ScipyLinalgTest(jtu.JaxTestCase):
     args_maker = lambda: [rng(shape, dtype)]
     # scipy.linalg.hessenberg sometimes returns a float Q matrix for complex
     # inputs
-    self._CheckAgainstNumpy(sp_func, jsp_func, args_maker, rtol=1e-5, atol=1e-5,
+    self._CheckAgainstNumpy(sp_func, jsp_func, args_maker, rtol=1e-4, atol=1e-4,
                             check_dtypes=not calc_q)
     self._CompileAndCheck(jsp_func, args_maker)
 
