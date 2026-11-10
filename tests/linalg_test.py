@@ -2370,7 +2370,7 @@ class ScipyLinalgTest(jtu.JaxTestCase):
     # is guaranteed to be unique (i.e no negative real eigenvalue)
     rng = jtu.rand_default(self.rng())
     arg = rng(shape, dtype)
-    mat = arg @ arg.T
+    mat = arg @ np.conj(arg.T)
     args_maker = lambda : [mat]
     if dtype == np.float32 or dtype == np.complex64:
       tol = 1e-4
