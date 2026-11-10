@@ -5310,6 +5310,7 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
     def np_fun(x):
       if dtype == jnp.bfloat16:
         isnan_mask = np.isnan(x)
+        x = np.where(isnan_mask, dtype(0), x)
         isposinf_mask = np.isposinf(x)
         isneginf_mask = np.isneginf(x)
         res = x.astype(np.float32)
