@@ -98,7 +98,6 @@ nb::dict Registrations() {
 }
 
 NB_MODULE(_lapack, m) {
-  m.def("initialize", &Initialize);
   m.def("registrations", &Registrations);
   // Submodules
   auto svd = m.def_submodule("svd");
