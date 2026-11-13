@@ -194,6 +194,11 @@ LAX_GRAD_OPS = [
                    dtypes=grad_float_dtypes),
     grad_test_spec(lax.atan2pi, nargs=2, order=2, rng_factory=jtu.rand_default,
                    dtypes=grad_float_dtypes),
+    grad_test_spec(lax.exp2m1, nargs=1, order=2, rng_factory=jtu.rand_small,
+                   dtypes=grad_float_dtypes),
+    grad_test_spec(lax.log2p1, nargs=1, order=2,
+                   rng_factory=partial(jtu.rand_uniform, low=-0.8, high=4.0),
+                   dtypes=grad_float_dtypes),
 ]
 
 GradSpecialValuesTestSpec = collections.namedtuple(
@@ -219,6 +224,8 @@ LAX_GRAD_SPECIAL_VALUE_TESTS = [
     grad_special_values_test_spec(lax.asinpi, [0.]),
     grad_special_values_test_spec(lax.acospi, [0.]),
     grad_special_values_test_spec(lax.atanpi, [0., 1000.]),
+    grad_special_values_test_spec(lax.exp2m1, [0.]),
+    grad_special_values_test_spec(lax.log2p1, [0.]),
 ]
 
 
@@ -1102,6 +1109,22 @@ class LaxAutodiffTest(jtu.JaxTestCase):
                                   fill_value=-1)
     x = rng(shape, dtype)
     check_grads(gather, (x,), 2, ["fwd", "rev"], 1e-2, 1e-2, 1.)
+
+  def testGatherGradTPURegression(self):
+    # Regression test for https://github.com/jax-ml/jax/issues/39025
+    B, D, K = 256, 8, 128
+    xi = jax.numpy.arange(D)
+    gather = lambda x: x[:, xi, :]
+
+    rng = jtu.rand_default(self.rng())
+    x = rng((B, D, K), jax.numpy.float32)
+    g = rng((B, D, K), jax.numpy.float32)
+
+    _, back = jax.vjp(gather, x)
+    dx_eager = back(g)[0]
+
+    # This assertion will fail on TPU in eager mode if the bug is present
+    self.assertAllClose(dx_eager, g, atol=1e-3)
 
   def testGatherTransposeCotangentDtype(self):
     # cotangents can flow in a different (e.g. higher-precision) dtype than

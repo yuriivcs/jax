@@ -171,6 +171,15 @@ if dtypes.int1 is not None:
       ir.IntegerType.get_unsigned, 1
   )
 
+if dtypes.bcomplex32 is not None:
+  _dtype_to_ir_type[np.dtype(dtypes.bcomplex32)] = (
+      lambda: ir.ComplexType.get(ir.BF16Type.get())
+  )
+if dtypes.complex32 is not None:
+  _dtype_to_ir_type[np.dtype(dtypes.complex32)] = (
+      lambda: ir.ComplexType.get(ir.F16Type.get())
+  )
+
 
 def dtype_to_ir_type(dtype: core.bint | np.dtype | np.generic) -> ir.Type:
   if isinstance(dtype, core.bint):
@@ -396,7 +405,8 @@ for _scalar_type in [np.int8, np.int16, np.int32, np.int64,
                      np.uint8, np.uint16, np.uint32, np.uint64,
                      np.float16, np.float32, np.float64,
                      np.complex64, np.complex128,
-                     np.bool_, np.longlong, dtypes.bfloat16]:
+                     np.bool_, np.longlong, dtypes.bfloat16,
+                     *dtypes._custom_complex_scalar_types]:
   register_constant_handler(_scalar_type, _ndarray_constant_handler)
 
 def _python_scalar_handler(val, aval: core.AbstractValue | None):
@@ -456,7 +466,8 @@ for _scalar_type in [np.int8, np.int16, np.int32, np.int64,
                      np.uint8, np.uint16, np.uint32, np.uint64,
                      np.float16, np.float32, np.float64,
                      np.complex64, np.complex128,
-                     np.bool_, np.longlong, dtypes.bfloat16]:
+                     np.bool_, np.longlong, dtypes.bfloat16,
+                     *dtypes._custom_complex_scalar_types]:
   register_attribute_handler(_scalar_type, _numpy_array_attribute_handler)
 
 def _dtype_attribute_handler(dtype: np.dtype | np.generic) -> ir.Attribute:
@@ -1098,7 +1109,7 @@ def register_lowering(prim: core.Primitive, rule: LoweringRule,
       with caching are fixed.
     shard_map_collective_rule: Optional rule returning ``PartitioningRule`` (or
       raising ``NotImplementedError`` if unsupported) to lower explicit-mesh
-      collectives via ``shard_map`` when ``jax_shard_map_partitioning`` is
+      collectives via ``shard_map`` when ``jax_partitioning`` is
       enabled.
     shard_map_passthrough: If ``True``, lower this primitive directly without
       wrapping it in ``shard_map`` (e.g. for identity primitives or primitives
@@ -2568,7 +2579,7 @@ def _maybe_lower_with_shard_map(
     _prim: core.Primitive, ctx: LoweringRuleContext, *args, **params):
   from jax._src import shard_map  # type: ignore
   from jax._src import pjit  # type: ignore
-  if (not config.shard_map_partitioning.value or
+  if (not config.jax_partitioning.value or
       _prim in shard_map_passthrough_primitives):
     return None
 

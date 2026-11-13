@@ -2589,7 +2589,8 @@ def _gather_lower(ctx, operand, indices, *,
 
 def _gather_collective_rule(
     in_avals, out_avals, *, dimension_numbers, slice_sizes, out_sharding,
-    **params):
+    mode, fill_value, **params):
+  from jax._src.lax import parallel
   del params
   op_aval, idx_aval = in_avals
   out_aval, = out_avals
@@ -2597,9 +2598,19 @@ def _gather_collective_rule(
   idx_parts = idx_aval.sharding.spec.partitions
   dnums = dimension_numbers
 
-  # Sharded index vectors or collapsed dims need an all-gather across shards.
-  if (idx_parts[-1] is not None or
-      any(op_parts[i] is not None for i in dnums.collapsed_slice_dims)):
+  if idx_parts[-1] is not None:
+    raise NotImplementedError
+
+  sharded_collapsed = [
+      i for i in dnums.collapsed_slice_dims if op_parts[i] is not None]
+  reduced_axes = flatten_spec_no_none(op_parts[i] for i in sharded_collapsed)
+  zero_fill = False if out_aval.dtype == np.bool_ else 0
+  if sharded_collapsed and (
+      not set(sharded_collapsed).issubset(dnums.start_index_map) or
+      set(reduced_axes) & set(flatten_spec_no_none(idx_parts)) or
+      dtypes.issubdtype(out_aval.dtype, dtypes.extended) or
+      mode == GatherScatterMode.CLIP or
+      (mode == GatherScatterMode.FILL_OR_DROP and fill_value != zero_fill)):
     raise NotImplementedError
 
   # Propagation allows replicated-vs-sharded batch dims, which need a slice.
@@ -2628,8 +2639,34 @@ def _gather_collective_rule(
         out_batch_parts != idx_parts[:-1]):
       raise NotImplementedError
 
-  return mlir.PartitioningRule(per_shard_params={
-      'slice_sizes': tuple(shard_slice_sizes), 'out_sharding': None})
+  if not sharded_collapsed:
+    return mlir.PartitioningRule(per_shard_params={
+        'slice_sizes': tuple(shard_slice_sizes), 'out_sharding': None})
+
+  op_shard_shape = op_aval.sharding.shard_shape(op_aval.shape)
+  index_dtype = lax_utils.int_dtype_for_shape(op_aval.shape, signed=True)
+  reduce_fn = parallel.pmax if out_aval.dtype == np.bool_ else parallel.psum
+
+  def in_collective(op, idx):
+    idx = lax.convert_element_type(idx, index_dtype)
+    offsets = lax.stack([
+        lax.convert_element_type(parallel.axis_index(op_parts[d]), index_dtype)
+        * op_shard_shape[d]
+        if d in sharded_collapsed else np.array(0, dtype=index_dtype)
+        for d in dnums.start_index_map
+    ])
+    return op, idx - lax.broadcast_in_dim(offsets, idx.shape, (idx.ndim - 1,))
+
+  return mlir.PartitioningRule(
+      in_collective=in_collective,
+      out_collective=lambda y: reduce_fn(y, reduced_axes),
+      per_shard_params={
+          'slice_sizes': tuple(shard_slice_sizes),
+          'out_sharding': None,
+          'mode': GatherScatterMode.FILL_OR_DROP,
+          'fill_value': zero_fill,
+      },
+  )
 
 mlir.register_lowering(
     gather_p, _gather_lower, shard_map_collective_rule=_gather_collective_rule)
@@ -3900,36 +3937,57 @@ def _dynamic_slice_indices(
   result: list[ArrayLike] = []
   if isinstance(allow_negative_indices, bool):
     allow_negative_indices = [allow_negative_indices] * len(start_indices)
+
+  # Upcast narrow signed integer indices if any dimension size exceeds the
+  # dtype's max value (or is symbolic), keeping all start_indices at a matching
+  # dtype when they originally shared a single dtype.
+  index_dtypes = [_dtype(i) for i in start_indices]
+  if len(set(index_dtypes)) == 1 and dtypes.issubdtype(index_dtypes[0], np.signedinteger):
+    dt = index_dtypes[0]
+    for d, allow_neg in zip(operand.shape, allow_negative_indices):
+      if allow_neg and (not core.is_constant_dim(d) or d > dtypes.iinfo(dt).max):
+        target_dt = dtypes.canonicalize_dtype(
+            lax_utils.int_dtype_for_dim(d, signed=True)
+        )
+        if dtypes.iinfo(dt).bits < dtypes.iinfo(target_dt).bits:
+          dt = target_dt
+    index_dtypes = [dt] * len(start_indices)
+
   # Loop to correct for negative indices.
-  for i, d, allow_negative_index in zip(
-      start_indices, operand.shape, allow_negative_indices
+  for i, d, allow_negative_index, idx_dt in zip(
+      start_indices, operand.shape, allow_negative_indices, index_dtypes
   ):
     # If i is unsigned, then it cannot be negative.
-    if dtypes.issubdtype(_dtype(i), np.unsignedinteger):
+    if dtypes.issubdtype(idx_dt, np.unsignedinteger):
       result.append(i)
       continue
     # Test whether i and d are static to avoid unnecessary staging.
     if isinstance(i, (int, np.integer)) and core.is_constant_dim(d):
+      i_int = int(i)
       if allow_negative_index:
-        result.append(lax.convert_element_type(i + d if i < 0 else i, _dtype(i)))
-      elif i < 0:
+        result.append(lax.convert_element_type(i_int + d if i_int < 0 else i_int, idx_dt))
+      elif i_int < 0:
         raise ValueError(f"Index {i} is out of bounds for dimension {d} if "
                           "allow_negative_indices=False")
       else:
-        result.append(lax.convert_element_type(i, _dtype(i)))
+        result.append(lax.convert_element_type(i_int, idx_dt))
       continue
     d = core.dimension_as_value(d)
     if isinstance(i, (int, np.integer)):
+      i_int = int(i)
+      i_val = lax.convert_element_type(i_int, idx_dt) if idx_dt != _dtype(i) else i
       if allow_negative_index:
-        result.append(i + lax.convert_element_type(d, _dtype(i)) if i < 0 else i)
-      elif i < 0:
+        result.append(i_val + lax.convert_element_type(d, idx_dt) if i_int < 0 else i_val)
+      elif i_int < 0:
         raise ValueError(f"Index {i} is out of bounds for dimension {d} if "
                           "allow_negative_indices=False")
       else:
-        result.append(i)
+        result.append(i_val)
       continue
+    if idx_dt != _dtype(i):
+      i = lax.convert_element_type(i, idx_dt)
     if allow_negative_index:
-      d_arr = lax.convert_element_type(d, _dtype(i))
+      d_arr = lax.convert_element_type(d, idx_dt)
       # pyrefly: ignore[unsupported-operation]
       result.append(lax.select(i < 0, i + d_arr, i))
     else:

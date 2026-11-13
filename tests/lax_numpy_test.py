@@ -4287,6 +4287,52 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
       self._CompileAndCheck(jnp_fun, args_maker)
 
   @jtu.sample_product(
+      dtype=[jnp.uint8, jnp.int8, jnp.int16],
+      mode=['raise', 'wrap', 'clip'],
+      jit=[False, True],
+  )
+  def testChooseNarrowDtypeLargeN(self, dtype, mode, jit):
+    # Regression test for https://github.com/jax-ml/jax/issues/42464:
+    # `N = len(choices)` must not wrap when it does not fit in `a`'s dtype.
+    # uint8 and int16 use 300 choices (300 does not fit in uint8, but does
+    # fit in int16); int8 uses 128 choices (128 does not fit in int8).
+    if dtype == jnp.int8:
+      n_choices, last_idx = 128, 120
+    else:
+      n_choices, last_idx = 300, 250
+    choices = jnp.arange(3 * n_choices).reshape(n_choices, 3)
+    a = jnp.array([50, 1, last_idx], dtype=dtype)
+    expected = jnp.array([150, 4, 3 * last_idx + 2])
+    fun = partial(jnp.choose, mode=mode)
+    if jit:
+      fun = jax.jit(fun)
+    if jit and mode == 'raise':
+      msg = ("The error occurred because jnp.choose was jit-compiled"
+             " with mode='raise'. Use mode='wrap' or mode='clip' instead.")
+      with self.assertRaisesRegex(core.ConcretizationTypeError, msg):
+        fun(a, choices)
+    else:
+      self.assertArraysEqual(fun(a, choices), expected)
+
+  @jtu.sample_product(
+    mode=['raise', 'wrap', 'clip'],
+  )
+  def testChooseLargeNOutOfBounds(self, mode):
+    # Out-of-bounds indices must still wrap/clip/raise as before, when the
+    # index dtype is large enough for the number of choices (no cast).
+    choices = jnp.arange(900).reshape(300, 3)
+    a = jnp.array([50, 301, 0], dtype=jnp.int16)
+    if mode == 'wrap':
+      self.assertArraysEqual(jnp.choose(a, choices, mode=mode),
+                             jnp.array([150, 4, 2]))
+    elif mode == 'clip':
+      self.assertArraysEqual(jnp.choose(a, choices, mode=mode),
+                             jnp.array([150, 898, 2]))
+    else:
+      with self.assertRaisesRegex(ValueError, "invalid entry in choice array"):
+        jnp.choose(a, choices, mode=mode)
+
+  @jtu.sample_product(
     shape=nonempty_nonscalar_array_shapes,
     dtype=int_dtypes + unsigned_dtypes,
     idx_shape=all_shapes,
@@ -5258,7 +5304,7 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
     self.assertArraysEqual(expected, actual)
 
   @jtu.sample_product(
-    dtype=inexact_dtypes,
+    dtype=all_dtypes,
     shape=[0, 5],
     n=[2, 4],
     increasing=[False, True],
@@ -5273,7 +5319,8 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
     # np.vander seems to return float64 for all floating types. We could obey
     # those semantics, but they seem like a bug.
     self._CheckAgainstNumpy(np_fun, jnp_fun, args_maker, check_dtypes=False,
-                            tol={np.float32: 1e-3, np.complex64: 1e-3})
+                            tol={np.float32: 1e-3, np.complex64: 1e-3,
+                                 np.complex128: 1e-14})
     self._CompileAndCheck(jnp_fun, args_maker, check_dtypes=False)
 
   @jtu.sample_product(
@@ -5308,18 +5355,20 @@ class LaxBackedNumpyTests(jtu.JaxTestCase):
     rng = jtu.rand_some_inf_and_nan(self.rng())
     dtype = np.dtype(dtypes.canonicalize_dtype(dtype)).type
     def np_fun(x):
-      if dtype == jnp.bfloat16:
-        isnan_mask = np.isnan(x)
-        x = np.where(isnan_mask, dtype(0), x)
-        isposinf_mask = np.isposinf(x)
-        isneginf_mask = np.isneginf(x)
-        res = x.astype(np.float32)
-        res = np.where(isnan_mask, np.inf, res)
-        res = np.where(isposinf_mask, 1.0, res)
-        res = np.where(isneginf_mask, 2.0, res)
-        return res.astype(dtype)
-      else:
-        return np.nan_to_num(x, nan=np.inf, posinf=1.0, neginf=2.0).astype(dtype)
+      with np.errstate(invalid='ignore'):
+        if dtype == jnp.bfloat16:
+          res = x.astype(np.float32)
+          isnan_mask = np.isnan(res)
+          isposinf_mask = np.isposinf(res)
+          isneginf_mask = np.isneginf(res)
+          res = np.where(isnan_mask, np.inf, res)
+          res = np.where(isposinf_mask, 1.0, res)
+          res = np.where(isneginf_mask, 2.0, res)
+          return res.astype(dtype)
+        else:
+          return np.nan_to_num(
+              x, nan=np.inf, posinf=1.0, neginf=2.0
+          ).astype(dtype)
 
     args_maker = lambda: [rng(shape, dtype)]
     jnp_fun = lambda x: jnp.nan_to_num(x, nan=np.inf, posinf=1.0, neginf=2.0)

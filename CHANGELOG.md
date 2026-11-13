@@ -17,6 +17,9 @@ When releasing, please add the new-release-boilerplate to docs/pallas/CHANGELOG.
 ## Unreleased
 
 * New features
+  * Added a `with_logs` option to {func}`jax.grad` and
+    {func}`jax.value_and_grad`, returning backward-pass logs alongside
+    gradients without calling {func}`jax.vjp` directly.
   * Added `jax.lax.DotAlgorithmPreset.F8E4M3FN_F8E4M3FN_F32_X3` and
     `F8E4M3FN_F8E4M3FN_F32_X4` dot algorithm presets (requiring `jaxlib` >= 514)
     for emulating `bfloat16` precision matmuls on `bfloat16` or `float32` inputs
@@ -34,9 +37,10 @@ When releasing, please add the new-release-boilerplate to docs/pallas/CHANGELOG.
   * Added {func}`jax.scipy.special.gammaincinv` and
     {func}`jax.scipy.special.gammainccinv`, the inverses of the regularized
     incomplete gamma functions, with gradients with respect to both arguments.
-  * Added {func}`jax.scipy.special.jn` and {func}`jax.scipy.special.yn`,
-    providing accurate evaluation of integer-order Bessel functions of the first
-    and second kind.
+  * Added {func}`jax.scipy.special.jn`, {func}`jax.scipy.special.yn`,
+    {func}`jax.scipy.special.iv`, and {func}`jax.scipy.special.kn`,
+    providing accurate evaluation of integer-order Bessel functions and
+    modified Bessel functions of the first and second kind.
   * Added {func}`jax.lax.sinpi`, {func}`jax.lax.cospi`, and
     {func}`jax.lax.tanpi`, which compute `sin(pi * x)`, `cos(pi * x)`, and
     `tan(pi * x)` more accurately than multiplying by `pi` first. They return
@@ -49,6 +53,8 @@ When releasing, please add the new-release-boilerplate to docs/pallas/CHANGELOG.
     {func}`jax.lax.atanpi`, and {func}`jax.lax.atan2pi`, which compute the
     inverse trigonometric functions divided by `pi` (`asin(x) / pi`,
     `acos(x) / pi`, `atan(x) / pi`, and `atan2(x, y) / pi`).
+  * Added {func}`jax.lax.exp2m1` and {func}`jax.lax.log2p1`, which compute
+    `2**x - 1` and `log2(1 + x)` without losing precision near `x = 0`.
 
 * Breaking changes
   * The `jax_use_simplified_jaxpr_constants` configuration flag is now `True`
