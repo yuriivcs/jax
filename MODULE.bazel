@@ -35,9 +35,9 @@ git_override(
 bazel_dep(name = "rules_ml_toolchain")
 archive_override(
     module_name = "rules_ml_toolchain",
-    integrity = "sha256-WSwZZ73Ydws+dO5iJiKS7PYfCXZd/ymvEbRRQ6me2MI=",
-    strip_prefix = "rules_ml_toolchain-234b9c8d718f34b86155e7f6426bf55e88e9cbd2",
-    urls = ["https://github.com/yuriivcs/rules_ml_toolchain/archive/234b9c8d718f34b86155e7f6426bf55e88e9cbd2.tar.gz"],
+    integrity = "sha256-FOfpzCVND1KVdSK+Tf7l7jUI3T7744FlST1vjFurlq4=",
+    strip_prefix = "rules_ml_toolchain-c594a7ac340a10fe4096393e03f9b72db0483f1e",
+    urls = ["https://github.com/google-ml-infra/rules_ml_toolchain/archive/c594a7ac340a10fe4096393e03f9b72db0483f1e.tar.gz"],
 )
 
 # TODO: use a released version when available
