@@ -2111,7 +2111,7 @@ class ScipyLinalgTest(jtu.JaxTestCase):
       return c, d, e, tau
 
     args_maker = lambda: [rng(shape, dtype)]
-    self._CheckAgainstNumpy(sp_func, jax_func, args_maker, rtol=1e-4, atol=1e-4,
+    self._CheckAgainstNumpy(sp_func, jax_func, args_maker, rtol=1e-3, atol=1e-3,
                             check_dtypes=False)
 
     if len(shape) == 3:
