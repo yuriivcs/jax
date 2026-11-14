@@ -36,6 +36,13 @@ bazel_dep(name = "rules_ml_toolchain")
 archive_override(
     module_name = "rules_ml_toolchain",
     integrity = "sha256-FOfpzCVND1KVdSK+Tf7l7jUI3T7744FlST1vjFurlq4=",
+    patch_strip = 1,
+    patches = [
+        # flang only looks for `USE, INTRINSIC` modules next to its own binary,
+        # so the x86_64 -> aarch64 Fortran toolchain must also ship the x86_64
+        # ones for remote execution. TODO: remove once this is fixed upstream.
+        "//third_party/rules_ml_toolchain:fortran_cross_intrinsic_modules.patch",
+    ],
     strip_prefix = "rules_ml_toolchain-c594a7ac340a10fe4096393e03f9b72db0483f1e",
     urls = ["https://github.com/google-ml-infra/rules_ml_toolchain/archive/c594a7ac340a10fe4096393e03f9b72db0483f1e.tar.gz"],
 )

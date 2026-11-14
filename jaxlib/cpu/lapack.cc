@@ -26,8 +26,6 @@ namespace {
 
 namespace nb = nanobind;
 
-void Initialize() {}
-
 nb::dict Registrations() {
   nb::dict dict;
   dict["lapack_strsm_ffi"] = EncapsulateFunction(lapack_strsm_ffi);
